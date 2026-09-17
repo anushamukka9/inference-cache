@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inference-cache"
+version = "0.1.0"
+description = "LLM inference caching layer: prompt normalization, exact and semantic match, LRU+TTL eviction, stats, pluggable backends"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Anusha Mukka" }]
+maintainers = [{ name = "Anusha Mukka" }]
+keywords = ["llm", "caching", "inference", "openai", "semantic-cache"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+redis = ["redis>=4.0"]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://anushamukka.com"
+Repository = "https://github.com/anushamukka9/inference-cache"
+Issues = "https://github.com/anushamukka9/inference-cache/issues"
+
+[project.scripts]
+inference-cache = "inference_cache.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
