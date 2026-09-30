@@ -1,8 +1,9 @@
 """inference-cache: an LLM inference caching layer.
 
-Drop-in caching for LLM calls — exact-match and semantic-similarity lookup,
+Drop-in caching for LLM calls - exact-match and semantic-similarity lookup,
 TTL + LRU eviction, hit/miss statistics with cost-saved estimates, and
-pluggable backends (memory, SQLite, Redis).
+pluggable backends (memory, SQLite, Redis). Thread-safe: a cache can be
+shared across threads, with exactly-once execution per key.
 """
 
 from .backends import CacheBackend, MemoryBackend, RedisBackend, SQLiteBackend
