@@ -3,9 +3,9 @@
 Every backend stores entries as ``(key, value, prompt, timestamp)`` records and
 implements the same small interface, so backends are interchangeable:
 
-- :class:`MemoryBackend` — in-memory, per-process. Fastest; nothing to install.
-- :class:`SQLiteBackend` — persistent, single file, stdlib only.
-- :class:`RedisBackend` — shared across processes/hosts; needs ``redis-py``.
+- :class:`MemoryBackend` - in-memory, per-process. Fastest; nothing to install.
+- :class:`SQLiteBackend` - persistent, single file, stdlib only.
+- :class:`RedisBackend` - shared across processes/hosts; needs ``redis-py``.
 
 TTL expiry and max-size LRU eviction are enforced by the :class:`InferenceCache`
 wrapper, but :class:`MemoryBackend` also tracks recency internally so direct
