@@ -5,16 +5,23 @@ serves repeated (or near-duplicate) prompts from storage instead of calling
 the model again.
 
 Lookup order for a request:
-  1. Exact match — SHA-256 key over normalized prompt + model + params.
-  2. Semantic match — optional; scans stored prompts with a pluggable
+  1. Exact match - SHA-256 key over normalized prompt + model + params.
+  2. Semantic match - optional; scans stored prompts with a pluggable
      similarity function and reuses the best entry above ``threshold``.
-  3. Miss — calls the wrapped function, stores the result, and enforces
+  3. Miss - calls the wrapped function, stores the result, and enforces
      ``max_size`` (LRU) and ``ttl_seconds`` expiry.
+
+Thread safety: the cache is safe to share across threads. Internal state
+(recency order, statistics) is guarded by a re-entrant lock, and concurrent
+``call()`` invocations for the same prompt are serialized on a per-key lock
+so the wrapped function runs exactly once per key - every waiter gets the
+stored result.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections import OrderedDict
 from typing import Any, Callable, Optional
@@ -67,6 +74,11 @@ class InferenceCache:
         self.similarity_threshold = similarity_threshold
         self.case_insensitive = case_insensitive
         self.stats = CacheStats(price_per_1k)
+        # Guards _recency and _key_locks; re-entrant so get()/call()/store()
+        # can nest without deadlock.
+        self._lock = threading.RLock()
+        # Per-key locks for exactly-once `call` semantics under concurrency.
+        self._key_locks: dict[str, threading.Lock] = {}
         # LRU recency tracker: key insertion order = recency for eviction.
         # Kept alongside the backend so eviction works uniformly across backends.
         self._recency: OrderedDict[str, None] = OrderedDict()
@@ -90,35 +102,62 @@ class InferenceCache:
         return (time.time() - record.get("created_at", 0.0)) > self.ttl_seconds
 
     def _touch(self, key: str) -> None:
-        self._recency[key] = None
-        self._recency.move_to_end(key)
+        with self._lock:
+            self._recency[key] = None
+            self._recency.move_to_end(key)
 
     def _evict_if_needed(self) -> None:
-        while self.max_size is not None and len(self._recency) >= self.max_size:
-            oldest, _ = self._recency.popitem(last=False)
-            self.backend.delete(oldest)
-            self.stats.record_eviction()
+        with self._lock:
+            while self.max_size is not None and len(self._recency) >= self.max_size:
+                oldest, _ = self._recency.popitem(last=False)
+                self.backend.delete(oldest)
+                self.stats.record_eviction()
+
+    def _key_lock(self, key: str) -> threading.Lock:
+        """Return (creating if needed) the lock serializing ``call()`` for *key*."""
+        with self._lock:
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._key_locks[key] = lock
+            return lock
+
+    def _release_key_lock(self, key: str, lock: threading.Lock) -> None:
+        # Drop the dict entry so it cannot grow without bound; threads that
+        # already hold this lock object still exclude each other on it, and
+        # any latecomer re-checks the cache inside its own critical section.
+        with self._lock:
+            if self._key_locks.get(key) is lock:
+                del self._key_locks[key]
+        lock.release()
 
     def _store(self, key: str, prompt: str, value: str, params: Optional[dict] = None) -> None:
-        self._evict_if_needed()
-        merged = {**self.default_params, **(params or {})}
-        self.backend.put(
-            key,
-            {
-                "value": value,
-                "prompt": normalize_prompt(
-                    prompt, case_insensitive=self.case_insensitive
-                ),
-                "model": self.model,
-                "params": json.dumps(merged, sort_keys=True, separators=(",", ":"), default=str),
-                "created_at": time.time(),
-            },
-        )
-        self._touch(key)
+        # One critical section: evict-then-insert stays atomic, so max_size
+        # is a hard bound even when threads store concurrently.
+        with self._lock:
+            self._evict_if_needed()
+            merged = {**self.default_params, **(params or {})}
+            self.backend.put(
+                key,
+                {
+                    "value": value,
+                    "prompt": normalize_prompt(
+                        prompt, case_insensitive=self.case_insensitive
+                    ),
+                    "model": self.model,
+                    "params": json.dumps(merged, sort_keys=True, separators=(",", ":"), default=str),
+                    "created_at": time.time(),
+                },
+            )
+            self._touch(key)
 
     # ---------------------------------------------------------------- lookup
     def get(self, prompt: str, params: Optional[dict] = None) -> Optional[str]:
         """Return a cached response for *prompt*, or ``None`` on miss."""
+        with self._lock:
+            return self._get_locked(prompt, params)
+
+    def _get_locked(self, prompt: str, params: Optional[dict] = None) -> Optional[str]:
         key = self._key(prompt, params)
 
         record = self.backend.get(key)
@@ -168,40 +207,57 @@ class InferenceCache:
         params: Optional[dict] = None,
         **kwargs: Any,
     ) -> str:
-        """Call ``fn(prompt, *args, **kwargs)``, serving from cache when possible."""
-        cached = self.get(prompt, params)
-        if cached is not None:
-            return cached
-        response = fn(prompt, *args, **kwargs)
-        self._store(self._key(prompt, params), prompt, response, params)
-        return response
+        """Call ``fn(prompt, *args, **kwargs)``, serving from cache when possible.
+
+        Thread-safe: concurrent calls for the same prompt serialize on a
+        per-key lock, so ``fn`` runs at most once per key and every thread
+        receives the stored result. The function itself runs outside the
+        cache-wide lock, so concurrent calls for *different* prompts proceed
+        in parallel.
+        """
+        key = self._key(prompt, params)
+        key_lock = self._key_lock(key)
+        key_lock.acquire()
+        try:
+            cached = self.get(prompt, params)
+            if cached is not None:
+                return cached
+            response = fn(prompt, *args, **kwargs)
+            self._store(key, prompt, response, params)
+            return response
+        finally:
+            self._release_key_lock(key, key_lock)
 
     # ------------------------------------------------------------ management
     def invalidate(self, prompt: str, params: Optional[dict] = None) -> None:
         key = self._key(prompt, params)
-        self.backend.delete(key)
-        self._recency.pop(key, None)
+        with self._lock:
+            self.backend.delete(key)
+            self._recency.pop(key, None)
 
     def clear(self) -> None:
-        self.backend.clear()
-        self._recency.clear()
+        with self._lock:
+            self.backend.clear()
+            self._recency.clear()
 
     def prune_expired(self) -> int:
         """Delete expired entries; return the number removed."""
         if self.ttl_seconds is None:
             return 0
         removed = 0
-        for key in list(self._recency.keys()):
-            record = self.backend.get(key)
-            if record is not None and self._is_expired(record):
-                self.backend.delete(key)
-                self._recency.pop(key, None)
-                self.stats.record_expired()
-                removed += 1
+        with self._lock:
+            for key in list(self._recency.keys()):
+                record = self.backend.get(key)
+                if record is not None and self._is_expired(record):
+                    self.backend.delete(key)
+                    self._recency.pop(key, None)
+                    self.stats.record_expired()
+                    removed += 1
         return removed
 
     def __len__(self) -> int:
-        return len(self._recency)
+        with self._lock:
+            return len(self._recency)
 
     def __contains__(self, prompt: str) -> bool:
         return self.get(prompt) is not None
