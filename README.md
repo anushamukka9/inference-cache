@@ -1,21 +1,23 @@
 # inference-cache
 
 A drop-in **LLM inference caching layer**: wrap any `fn(prompt) -> str` and
-serve repeated — or near-duplicate — prompts from cache instead of paying for
+serve repeated - or near-duplicate - prompts from cache instead of paying for
 another model call.
 
-- **Exact + semantic matching** — deterministic SHA-256 keys over normalized
+- **Exact + semantic matching** - deterministic SHA-256 keys over normalized
   prompt + model + params, plus pluggable similarity (dependency-free lexical
   default) for near-duplicate prompts.
-- **Prompt normalization** — unicode NFC, whitespace collapsing, optional
+- **Prompt normalization** - unicode NFC, whitespace collapsing, optional
   case folding, so trivial formatting differences don't bust the cache.
-- **TTL + LRU eviction** — time-based expiry and max-size least-recently-used
+- **TTL + LRU eviction** - time-based expiry and max-size least-recently-used
   eviction, uniform across all backends.
-- **Hit/miss statistics & cost-saved estimates** — with configurable
+- **Hit/miss statistics & cost-saved estimates** - with configurable
   per-model pricing.
-- **Pluggable backends** — in-memory (default), SQLite (persistent, stdlib
+- **Pluggable backends** - in-memory (default), SQLite (persistent, stdlib
   only), Redis (shared across processes/hosts, optional extra).
-- **CLI** — demo, put/get, stats, prune, clear, similarity scoring.
+- **Thread-safe** - share one cache across threads; concurrent calls for the
+  same prompt run the wrapped function exactly once.
+- **CLI** - demo, put/get, stats, prune, clear, similarity scoring.
 
 ## Install
 
@@ -96,6 +98,24 @@ Lookup order is always exact → semantic → miss. Storage backends implement a
 small `CacheBackend` protocol (`get`/`put`/`delete`/`clear`/`keys`/`scan`), so
 custom backends (DynamoDB, Postgres, …) are a ~30-line class.
 
+## Production notes
+
+- **Thread-safe.** A single `InferenceCache` can be shared across threads
+  (e.g. a web server's request handlers). Recency bookkeeping and statistics
+  are lock-guarded, and concurrent `call()`s for the same prompt serialize on
+  a per-key lock: the wrapped function runs exactly once per key while other
+  threads wait for the stored result. Calls for *different* prompts still run
+  in parallel, since the model function itself executes outside the
+  cache-wide lock. See `examples/threaded_demo.py` and
+  `tests/test_thread_safety.py`.
+- **TTL and LRU are enforced on write.** Expired entries are also lazily
+  dropped on read; call `prune_expired()` on a schedule if you want eager
+  cleanup.
+- **Cost estimates are directional.** Token counts use a words×1.3 heuristic;
+  set real per-model prices via `price_per_1k` for closer numbers.
+- **Redis for multi-process.** The memory and SQLite backends are per-process;
+  use `RedisBackend` when several processes or hosts must share one cache.
+
 ## Development
 
 ```bash
@@ -105,4 +125,4 @@ pytest
 
 ## License
 
-MIT — Copyright (c) 2026 Anusha Mukka. See [LICENSE](LICENSE).
+MIT - Copyright (c) 2026 Anusha Mukka. See [LICENSE](LICENSE).
