@@ -17,7 +17,7 @@ ask("What is the capital of France?")   # hit  -> served from cache
 ask("what is the capital of france?")   # semantic hit (default threshold 0.92)
 ```
 
-The wrapped function's cache is available as `ask.cache` — inspect
+The wrapped function's cache is available as `ask.cache` - inspect
 `ask.cache.stats.to_dict()`, call `ask.cache.clear()`, etc.
 
 The decorator also works bare: `@cached` with no arguments.
@@ -26,10 +26,10 @@ The decorator also works bare: `@cached` with no arguments.
 
 Lookup order per request:
 
-1. **Exact** — SHA-256 over normalized prompt + model + params.
-2. **Semantic** — scans stored prompts with a similarity function; reuses the
+1. **Exact** - SHA-256 over normalized prompt + model + params.
+2. **Semantic** - scans stored prompts with a similarity function; reuses the
    best entry scoring above `similarity_threshold`.
-3. **Miss** — calls the function and stores the result.
+3. **Miss** - calls the function and stores the result.
 
 Bring your own similarity (e.g. embedding cosine) with the documented
 `SimilarityFn` signature `(a, b) -> float`:
@@ -45,7 +45,7 @@ cache = InferenceCache(
 
 The bundled default, `lexical_similarity`, blends token-set Jaccard (50%),
 TF cosine (30%) and character ratio (20%). It's dependency-free and good at
-catching whitespace, casing, and light rewording — not deep paraphrases.
+catching whitespace, casing, and light rewording - not deep paraphrases.
 For production paraphrase detection, plug in an embedding model.
 
 ## 3. Cache keys and normalization
@@ -54,7 +54,7 @@ Keys are deterministic: same normalized prompt + model + params → same key.
 Normalization NFC-normalizes unicode, collapses whitespace, and strips edges.
 Options:
 
-- `case_insensitive=True` — fold prompts to lowercase before keying.
+- `case_insensitive=True` - fold prompts to lowercase before keying.
 - Params matter: `temperature=0.7` and `temperature=0.0` produce different keys,
   because sampling settings change the distribution of valid responses.
 
@@ -90,7 +90,7 @@ stats = cache.stats.to_dict()
 #  'tokens_served_from_cache': 3150, 'estimated_cost_saved_usd': 0.0063}
 ```
 
-Set real prices for accurate estimates — a float (USD per 1K tokens) or a
+Set real prices for accurate estimates - a float (USD per 1K tokens) or a
 per-model dict:
 
 ```python
